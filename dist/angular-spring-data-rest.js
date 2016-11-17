@@ -4,7 +4,7 @@
 
 /**
  * @module spring-data-rest
- * @version 0.4.4
+ * @version 0.4.5
  *
  * An AngularJS module to ease the work with a Spring Data REST backend.
  */
@@ -12,7 +12,7 @@ angular.module("spring-data-rest", ["ngResource"]);
 
 /**
  * @module spring-data-rest
- * @version 0.4.4
+ * @version 0.4.5
  *
  * Provider for the SpringDataRestAdapter which is the core of this module.
  */
@@ -100,9 +100,11 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
              * @param {object} data the data object reference in which the response is stored
              * @param {[string]|string} fetchLinkNames the fetch link names to allow to process the fetched response
              * @param {boolean} recursive true if the fetched response should be processed recursively with the
+             * @param {boolean} fetchMultiple true if multiple same link names should be resolved. ATTENTION: this could lead to
+             * an infinite loop when you have circular dependencies between the links.
              * adapter, false otherwise
              */
-            function fetchFunction(url, key, data, fetchLinkNames, recursive) {
+            function fetchFunction(url, key, data, fetchLinkNames, recursive, fetchMultiple) {
                 if (config.fetchFunction == undefined) {
                     var promisesArray = [];
 
@@ -111,7 +113,7 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
 
                             // wrap the response again with the adapter and return the promise
                             if (recursive) {
-                                return processData(responseData.data, fetchLinkNames, true).then(function (processedData) {
+                                return processData(responseData.data, fetchLinkNames, true, fetchMultiple).then(function (processedData) {
                                     data[key] = processedData;
                                 });
                             } else {
@@ -129,7 +131,7 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
                     // wait for all promises to be resolved and return a new promise
                     return $injector.get("$q").all(promisesArray);
                 } else {
-                    return config.fetchFunction(url, key, data, fetchLinkNames, recursive);
+                    return config.fetchFunction(url, key, data, fetchLinkNames, recursive, fetchMultiple);
                 }
             }
 
@@ -142,9 +144,11 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
              * 'fetchAllLinkNamesKey' key from the config object to fetch all links except the 'self' key.
              * @param {boolean} recursive true if the automatically fetched response should be processed recursively with the
              * adapter, false otherwise
+             * @param {boolean} fetchMultiple true if multiple same link names should be resolved. ATTENTION: this could lead to
+             * an infinite loop when you have circular dependencies between the links.
              * @returns {object} the processed JSON data
              */
-            var processData = function processDataFunction(promiseOrData, fetchLinkNames, recursive) {
+            var processData = function processDataFunction(promiseOrData, fetchLinkNames, recursive, fetchMultiple) {
 
                 // convert the given promise or data to a $q promise
                 return $injector.get("$q").when(promiseOrData).then(function (data) {
@@ -274,12 +278,12 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
                                     // 2. the all link names key is given then fetch the link
                                     // 3. the given key is equal
                                     // 4. the given key is inside the array
-                                    if (linkMap[self].indexOf(linkName) < 0 &&
+                                    if ((fetchMultiple || linkMap[self].indexOf(linkName) < 0) &&
                                         (fetchLinkNames == config.fetchAllKey ||
                                         (typeof fetchLinkNames === "string" && linkName == fetchLinkNames) ||
                                         (fetchLinkNames instanceof Array && fetchLinkNames.indexOf(linkName) >= 0))) {
                                         promisesArray.push(fetchFunction(getProcessedUrl(data, linkName), linkName,
-                                            processedData, fetchLinkNames, recursive));
+                                            processedData, fetchLinkNames, recursive, fetchMultiple));
                                         linkMap[self].push(linkName);
                                     }
                                 }
@@ -302,12 +306,12 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
                         angular.forEach(processedData[config.embeddedNewKey], function (value, key) {
 
                             // if the embeddedResourceName config variable is set to true, process each resource name array
-                            if (value instanceof Array && value.length > 0) {
+                            if (value instanceof Array) {
                                 var processedDataArray = [];
                                 var processedDataArrayPromise;
                                 angular.forEach(value, function (arrayValue, arrayKey) {
                                     if (angular.isObject(arrayValue)) {
-                                        processedDataArrayPromise = processDataFunction({data: arrayValue}, fetchLinkNames, recursive).then(function (processedResponseData) {
+                                        processedDataArrayPromise = processDataFunction({data: arrayValue}, fetchLinkNames, recursive, fetchMultiple).then(function (processedResponseData) {
                                             processedDataArray[arrayKey] = processedResponseData;
                                         });
                                         promisesArray.push(processedDataArrayPromise);
@@ -324,7 +328,7 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
                                 }
                             } else if (angular.isObject(value)) {
                                 // single objects are processed directly
-                                promisesArray.push(processDataFunction({data: value}, fetchLinkNames, recursive).then(function (processedResponseData) {
+                                promisesArray.push(processDataFunction({data: value}, fetchLinkNames, recursive, fetchMultiple).then(function (processedResponseData) {
                                     processedData[config.embeddedNewKey][key] = processedResponseData;
                                 }));
                             }
@@ -378,9 +382,9 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
             // empty the map and
             // return an object with the processData function
             return {
-                process: function(promiseOrData, fetchLinkNames, recursive) {
+                process: function (promiseOrData, fetchLinkNames, recursive, fetchMultiple) {
                     linkMap = {};
-                    return processData(promiseOrData, fetchLinkNames, recursive);
+                    return processData(promiseOrData, fetchLinkNames, recursive, fetchMultiple);
                 }
             };
         }]
@@ -389,7 +393,7 @@ angular.module("spring-data-rest").provider("SpringDataRestAdapter", function ()
 });
 /**
  * @module spring-data-rest
- * @version 0.4.4
+ * @version 0.4.5
  *
  * Provider for the interceptor which wraps the SpringDataRestAdapter around the response object.
  */
@@ -406,7 +410,7 @@ angular.module("spring-data-rest").provider("SpringDataRestInterceptor",
 
                     return {
                         response: function (response) {
-                            if(!angular.isObject(response.data)){
+                            if (!angular.isObject(response.data) || response.data instanceof Array){
                                 return response;
                             }
                             return SpringDataRestAdapter.process(response.data).then(function (processedResponse) {
